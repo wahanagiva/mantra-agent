@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs / output
+*.log
+tests/output/
+crashes/
+
+# Models (downloaded at runtime, too big for git)
+gfpgan/weights/
+*.pth
+*.onnx
+
+# Test artifacts
+_test_*
+_temp_*
