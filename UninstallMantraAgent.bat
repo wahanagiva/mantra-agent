@@ -19,18 +19,6 @@ echo   - Autostart entry HKCU\...\Run\MantraAgent
 echo   - Running agent processes
 echo.
 
-set "HAS_FOLDER=0"
-set "HAS_REG=0"
-if exist "%ROOT%" set "HAS_FOLDER=1"
-reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v MantraAgent >nul 2>&1
-if not errorlevel 1 set "HAS_REG=1"
-
-if "%HAS_FOLDER%"=="0" if "%HAS_REG%"=="0" (
-    echo [info] Mantra Agent belum di-install di PC ini.
-    pause
-    exit /b 0
-)
-
 set /p "CONFIRM=Lanjut FULL UNINSTALL? (y/N): "
 if /i not "%CONFIRM%"=="y" (
     echo Dibatalkan.
@@ -45,16 +33,19 @@ timeout /t 3 >nul
 
 echo.
 echo [2/3] Hapus autostart registry...
-if "%HAS_REG%"=="1" (
+reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v MantraAgent >nul 2>&1
+if errorlevel 1 (
+    echo   ^(autostart entry tidak ada - skip^)
+) else (
     reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v MantraAgent /f >nul 2>&1
     echo   removed
-) else (
-    echo   ^(autostart entry tidak ada - skip^)
 )
 
 echo.
 echo [3/3] Hapus folder %ROOT% ...
-if "%HAS_FOLDER%"=="1" (
+if not exist "%ROOT%" (
+    echo   ^(folder tidak ada - skip^)
+) else (
     rmdir /s /q "%ROOT%" 2>nul
     if exist "%ROOT%" (
         echo   ada file ke-lock, retry pake powershell...
@@ -73,8 +64,6 @@ if "%HAS_FOLDER%"=="1" (
         exit /b 1
     )
     echo   done
-) else (
-    echo   ^(folder tidak ada - skip^)
 )
 
 echo.
