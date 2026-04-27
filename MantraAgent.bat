@@ -104,12 +104,16 @@ if not exist "%BIN%\yt-dlp.exe" (
     if errorlevel 1 ( echo ERROR: yt-dlp download failed & goto fail )
 )
 
-REM --- 6. Register autostart (first run only) -----------------------------
-reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v MantraAgent >nul 2>&1
-if errorlevel 1 (
-    reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v MantraAgent /t REG_SZ /d "\"%~f0\"" /f >> "%LOG%" 2>&1
-    echo [autostart] registered for next boot
+REM --- 6. Self-install bat to %ROOT% + register autostart from there ------
+REM CRITICAL: autostart must point to a STABLE path. Pointing to %~f0 (where
+REM the user double-clicked from) breaks if user moves/deletes that file.
+REM Always copy ourselves to %ROOT%\MantraAgent.bat (lives next to runtime).
+set "INSTALLED_BAT=%ROOT%\MantraAgent.bat"
+if /i not "%~f0"=="%INSTALLED_BAT%" (
+    copy /y "%~f0" "%INSTALLED_BAT%" >nul 2>&1
 )
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v MantraAgent /t REG_SZ /d "\"%INSTALLED_BAT%\"" /f >> "%LOG%" 2>&1
+echo [autostart] registered ^(points to %INSTALLED_BAT%^)
 
 REM --- 7. Spawn tray (which spawns agent + shows tray icon) ---------------
 echo [run] Starting Mantra Agent tray ...
