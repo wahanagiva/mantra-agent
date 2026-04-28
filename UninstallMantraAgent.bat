@@ -1,22 +1,20 @@
 @echo off
 REM ============================================================================
 REM  Mantra Creative Agent - FULL UNINSTALLER
-REM  Hapus TOTAL: agent + venv + Python + source + ffmpeg + yt-dlp + models
-REM             + autostart + registry. Untuk re-install fresh.
+REM  Hapus TOTAL agent: kill processes + folder + registry. No prompts.
 REM  No admin required.
 REM ============================================================================
 
 setlocal enabledelayedexpansion
-
 set "ROOT=%LOCALAPPDATA%\MantraAgent"
 
 echo.
 echo === Mantra Creative Agent - FULL UNINSTALLER ===
 echo.
 echo Akan menghapus SEMUA:
-echo   - Folder: %ROOT% ^(termasuk venv, source, ffmpeg, yt-dlp, models cache^)
+echo   - Folder: %ROOT% ^(termasuk venv, source, ffmpeg, yt-dlp, Node, models cache^)
 echo   - Autostart entry HKCU\...\Run\MantraAgent
-echo   - Running agent processes
+echo   - Running agent processes ^(pythonw / python / wscript^)
 echo.
 
 set /p "CONFIRM=Lanjut FULL UNINSTALL? (y/N): "
@@ -27,8 +25,8 @@ if /i not "%CONFIRM%"=="y" (
 )
 
 echo.
-echo [1/3] Stop semua agent processes...
-powershell -NoProfile -Command "Get-Process pythonw,python -ErrorAction SilentlyContinue | Where-Object { try { $_.MainModule.FileName -like '*MantraAgent*' } catch { $false } } | ForEach-Object { Write-Host ('  killing ' + $_.Name + ' PID ' + $_.Id); Stop-Process -Id $_.Id -Force }"
+echo [1/3] Stop semua agent processes ^(pythonw, python, wscript yg path MantraAgent^)...
+powershell -NoProfile -Command "Get-Process pythonw,python,wscript -ErrorAction SilentlyContinue | Where-Object { try { (Get-CimInstance Win32_Process -Filter ('ProcessId=' + $_.Id)).CommandLine -like '*MantraAgent*' } catch { $false } } | ForEach-Object { Write-Host ('  killing ' + $_.Name + ' PID ' + $_.Id); Stop-Process -Id $_.Id -Force }"
 timeout /t 3 >nul
 
 echo.
@@ -53,6 +51,11 @@ if not exist "%ROOT%" (
         timeout /t 2 >nul
     )
     if exist "%ROOT%" (
+        echo   retry sekali lagi setelah delay...
+        timeout /t 3 >nul
+        powershell -NoProfile -Command "Remove-Item -LiteralPath '%ROOT%' -Recurse -Force -ErrorAction SilentlyContinue"
+    )
+    if exist "%ROOT%" (
         echo.
         echo   *** GAGAL hapus folder ***
         echo   File ke-lock. Coba:
@@ -70,9 +73,8 @@ echo.
 echo === UNINSTALL SELESAI ===
 echo.
 echo Mantra Agent sudah TOTAL bersih dari PC ini.
-echo Buat install ulang: download MantraAgent.bat lagi dari
-echo   https://github.com/wahanagiva/mantra-agent/raw/main/MantraAgent.bat
-echo atau dari website mantra.majutrah.co.id (tombol Download).
+echo Buat install ulang: download MantraAgent.bat dari mantra.majutrah.co.id
+echo atau langsung https://github.com/wahanagiva/mantra-agent/releases/download/v1.4.0/MantraAgent.bat
 echo.
 pause
 exit /b 0
