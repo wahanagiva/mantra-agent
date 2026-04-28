@@ -29,6 +29,43 @@ set "GITHUB_VERSION_URL=https://api.github.com/repos/wahanagiva/mantra-agent/com
 echo. > "%LOG%"
 echo Mantra Agent Bootstrap >> "%LOG%"
 echo ROOT: %ROOT% >> "%LOG%"
+echo Date: %DATE% %TIME% >> "%LOG%"
+echo OS: >> "%LOG%"
+ver >> "%LOG%" 2>&1
+echo. >> "%LOG%"
+
+REM --- 0. Pre-check: connectivity + Visual C++ Redist ----------------------
+echo [0/6] Checking system requirements...
+
+REM Check internet to github.com
+curl -s --max-time 5 -o nul -w "%%{http_code}" https://github.com > "%TOOLS%\_net.txt" 2>nul
+set /p NET_CODE=<"%TOOLS%\_net.txt" 2>nul
+del "%TOOLS%\_net.txt" 2>nul
+if not "%NET_CODE%"=="200" if not "%NET_CODE%"=="301" if not "%NET_CODE%"=="302" (
+    echo ERROR: Cannot reach github.com ^(network blocked or no internet^).
+    echo        Check WiFi/ethernet, proxy, atau corporate firewall yang block github.com.
+    echo        HTTP code received: %NET_CODE%
+    goto fail
+)
+
+REM Check Visual C++ Redist 2015-2022 (x64) installed (registry check)
+reg query "HKLM\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\X64" /v Installed >nul 2>&1
+if errorlevel 1 (
+    reg query "HKLM\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\X64" /v Installed >nul 2>&1
+    if errorlevel 1 (
+        echo   Visual C++ Redistributable 2015-2022 ^(x64^) BELUM TERPASANG.
+        echo   Mendownload + install ^(perlu UAC prompt, klik YES kalo muncul^)...
+        curl -L --retry 3 -o "%TOOLS%\vc_redist.x64.exe" "https://aka.ms/vs/17/release/vc_redist.x64.exe" >> "%LOG%" 2>&1
+        if errorlevel 1 ( echo ERROR: VC++ Redist download failed & goto fail )
+        REM /install /quiet /norestart needs admin - will trigger UAC
+        "%TOOLS%\vc_redist.x64.exe" /install /quiet /norestart >> "%LOG%" 2>&1
+        del "%TOOLS%\vc_redist.x64.exe" 2>nul
+        echo   VC++ Redist install attempt selesai.
+    )
+)
+
+echo   System requirements OK.
+echo.
 
 REM --- 1. uv (15 MB single binary - handles Python + venv + pip) -------------
 if not exist "%TOOLS%\uv.exe" (
