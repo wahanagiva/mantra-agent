@@ -104,6 +104,23 @@ if not exist "%BIN%\yt-dlp.exe" (
     if errorlevel 1 ( echo ERROR: yt-dlp download failed & goto fail )
 )
 
+REM --- 5c. Node.js portable (kepake buat bgutil-ytdlp-pot-provider /
+REM        bypass YouTube bot detection; full-album fail tanpa ini) ----------
+set "NODE_DIR=%ROOT%\node"
+if not exist "%NODE_DIR%\node.exe" (
+    echo [5/5c] Downloading Node.js 22 LTS portable ^(~30 MB^)...
+    curl -L --retry 3 -o "%TOOLS%\node.zip" "https://nodejs.org/dist/v22.11.0/node-v22.11.0-win-x64.zip" >> "%LOG%" 2>&1
+    if errorlevel 1 ( echo ERROR: Node.js download failed & goto fail )
+    if exist "%TOOLS%\node_extract" rmdir /s /q "%TOOLS%\node_extract"
+    powershell -NoProfile -Command "Expand-Archive -LiteralPath '%TOOLS%\node.zip' -DestinationPath '%TOOLS%\node_extract' -Force" >> "%LOG%" 2>&1
+    if exist "%NODE_DIR%" rmdir /s /q "%NODE_DIR%"
+    for /f "delims=" %%D in ('dir /b /ad "%TOOLS%\node_extract"') do (
+        move "%TOOLS%\node_extract\%%D" "%NODE_DIR%" >nul 2>&1
+    )
+    rmdir /s /q "%TOOLS%\node_extract" 2>nul
+    del "%TOOLS%\node.zip" 2>nul
+)
+
 REM --- 6. Self-install bat + write VBS launcher + register autostart -------
 REM Autostart runs the VBS launcher (silent, no console) which calls the bat
 REM with hidden window. First-run keeps console visible (user sees install
@@ -122,6 +139,8 @@ REM --- 7. Spawn tray (which spawns agent + shows tray icon) ---------------
 echo [run] Starting Mantra Agent tray ...
 set "MANTRA_AGENT_FFMPEG=%BIN%\ffmpeg.exe"
 set "MANTRA_AGENT_YTDLP=%BIN%\yt-dlp.exe"
+REM Prepend our portable Node to PATH so bgutil-ytdlp-pot-provider finds it
+set "PATH=%NODE_DIR%;%PATH%"
 set "PYTHONPATH=%SRC%"
 start "" /B "%VENV%\Scripts\pythonw.exe" "%SRC%\tray.py"
 
