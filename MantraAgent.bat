@@ -135,7 +135,15 @@ REM Write VBS launcher (one-liner that runs bat hidden, no wait)
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v MantraAgent /t REG_SZ /d "wscript.exe \"%VBS_LAUNCHER%\"" /f >> "%LOG%" 2>&1
 echo [autostart] registered silent launcher ^(VBS hidden window^)
 
-REM --- 7. Spawn tray (which spawns agent + shows tray icon) ---------------
+REM --- 7. Spawn tray (skip if already running to avoid double-spawn race) -
+REM Race scenario: user double-clicks bat, lalu Windows autostart fire bat
+REM kedua kalinya = 2 tray + 2 agent = port conflict. Cek dulu.
+powershell -NoProfile -Command "if (Get-Process pythonw -EA SilentlyContinue | Where-Object { try { $_.MainModule.FileName -like '*MantraAgent*src*' } catch { $false } }) { exit 0 } else { exit 1 }"
+if not errorlevel 1 (
+    echo [run] Mantra Agent tray sudah jalan - skip spawn
+    goto :end
+)
+
 echo [run] Starting Mantra Agent tray ...
 set "MANTRA_AGENT_FFMPEG=%BIN%\ffmpeg.exe"
 set "MANTRA_AGENT_YTDLP=%BIN%\yt-dlp.exe"
@@ -143,6 +151,8 @@ REM Prepend our portable Node to PATH so bgutil-ytdlp-pot-provider finds it
 set "PATH=%NODE_DIR%;%PATH%"
 set "PYTHONPATH=%SRC%"
 start "" /B "%VENV%\Scripts\pythonw.exe" "%SRC%\tray.py"
+
+:end
 
 echo.
 echo OK - Mantra Agent jalan di background. Buka https://mantra.majutrah.co.id
