@@ -1,10 +1,26 @@
 @echo off
 REM ============================================================================
-REM  Mantra Creative Agent - bootstrap + run
-REM  First-run: setup Python + venv + deps + ffmpeg + yt-dlp (~5-10 min)
-REM  Subsequent runs: instant - just spawn agent
-REM  Auto-start: registered to HKCU Run on first successful run
-REM  No admin / UAC required.
+REM  Mantra Creative Agent - BULLETPROOF Installer
+REM
+REM  Target: PC user FRESH install Windows 10/11. Tidak ada Python, tidak ada
+REM  VC++, tidak ada apa-apa. Bat ini handle SEMUA dependency otomatis.
+REM
+REM  Yang di-install:
+REM    1. Visual C++ Redistributable 2015-2022 (x64) via UAC
+REM       + Bundled DLL fallback (kalau UAC ditolak, agent tetap jalan)
+REM    2. uv (Astral Python toolchain, single binary)
+REM    3. Python 3.12 (auto-download via uv)
+REM    4. Source code dari GitHub (mantra-agent repo)
+REM    5. PyTorch CPU + FastAPI + GFPGAN + rembg + 100+ deps via pip
+REM    6. ffmpeg + ffprobe (untuk full-album audio merge)
+REM    7. yt-dlp.exe (untuk YouTube download)
+REM    8. Node.js 22 LTS portable (untuk bgutil-ytdlp-pot-provider)
+REM    9. Smoke test: import torch, fail-fast kalau VC++ runtime broken
+REM   10. Self-copy bat + VBS launcher + autostart registry
+REM   11. Spawn agent tray (skip-if-running guard)
+REM
+REM  Total download: ~1.5 GB. Waktu: 5-10 menit.
+REM  Subsequent runs: instant — langsung spawn tray.
 REM ============================================================================
 
 setlocal enabledelayedexpansion
@@ -14,127 +30,215 @@ set "VENV=%ROOT%\venv"
 set "SRC=%ROOT%\src"
 set "BIN=%ROOT%\bin"
 set "TOOLS=%ROOT%\tools"
+set "NODE_DIR=%ROOT%\node"
 set "LOG=%ROOT%\setup.log"
 
-if not exist "%ROOT%" mkdir "%ROOT%"
+if not exist "%ROOT%"  mkdir "%ROOT%"
 if not exist "%TOOLS%" mkdir "%TOOLS%"
-if not exist "%BIN%" mkdir "%BIN%"
+if not exist "%BIN%"   mkdir "%BIN%"
 
-REM Source code distribution.
-REM PROD: download zip from GitHub (always-latest pattern).
-REM Override for local dev/testing: set MANTRA_LOCAL_SRC env var to a local path.
+REM Source distribution. Always-latest pattern via GitHub main branch.
 set "GITHUB_SRC_ZIP=https://github.com/wahanagiva/mantra-agent/archive/refs/heads/main.zip"
-set "GITHUB_VERSION_URL=https://api.github.com/repos/wahanagiva/mantra-agent/commits/main"
 
+REM Detect "running from autostart" (silent mode, no pause/echo flourish needed)
+set "IS_AUTOSTART=0"
+if /i "%~f0"=="%ROOT%\MantraAgent.bat" (
+    REM Triggered by VBS autostart launcher OR self-copy re-exec.
+    REM If src already present + venv ready, this is autostart path.
+    if exist "%SRC%\main.py" if exist "%VENV%\Scripts\python.exe" set "IS_AUTOSTART=1"
+)
+
+REM Fresh install banner (skip on autostart silent runs)
+if "%IS_AUTOSTART%"=="0" (
+    echo.
+    echo ============================================================
+    echo   Mantra Creative Agent - Installer
+    echo ============================================================
+    echo   Akan setup semua dependency otomatis ^(~1.5 GB^).
+    echo   Estimasi waktu: 5-10 menit ^(tergantung internet^).
+    echo.
+    echo   JANGAN tutup window ini sampai selesai!
+    echo ============================================================
+    echo.
+)
+
+REM Reset log
 echo. > "%LOG%"
-echo Mantra Agent Bootstrap >> "%LOG%"
+echo Mantra Agent Bootstrap - Bulletproof Installer >> "%LOG%"
 echo ROOT: %ROOT% >> "%LOG%"
 echo Date: %DATE% %TIME% >> "%LOG%"
+echo Mode: autostart=%IS_AUTOSTART% >> "%LOG%"
 echo OS: >> "%LOG%"
 ver >> "%LOG%" 2>&1
 echo. >> "%LOG%"
 
-REM --- 0. Pre-check: connectivity + Visual C++ Redist ----------------------
-echo [0/6] Checking system requirements...
+REM Skip-if-running guard (top of file): kalau autostart trigger tapi tray
+REM udah jalan dari sesi sebelumnya, langsung exit. Cegah double-spawn race.
+if "%IS_AUTOSTART%"=="1" (
+    powershell -NoProfile -Command "if (Get-Process pythonw -EA SilentlyContinue | Where-Object { try { $_.MainModule.FileName -like '*MantraAgent*src*' } catch { $false } }) { exit 0 } else { exit 1 }"
+    if not errorlevel 1 (
+        echo [autostart] Tray sudah jalan, skip. >> "%LOG%"
+        exit /b 0
+    )
+)
 
-REM Check internet to github.com
-curl -s --max-time 5 -o nul -w "%%{http_code}" https://github.com > "%TOOLS%\_net.txt" 2>nul
+REM ============================================================================
+REM  STEP 1/9 - Pre-flight: connectivity check
+REM ============================================================================
+echo [1/9] Pre-flight checks...
+
+curl -s --max-time 10 -o nul -w "%%{http_code}" https://github.com > "%TOOLS%\_net.txt" 2>nul
 set /p NET_CODE=<"%TOOLS%\_net.txt" 2>nul
 del "%TOOLS%\_net.txt" 2>nul
 if not "%NET_CODE%"=="200" if not "%NET_CODE%"=="301" if not "%NET_CODE%"=="302" (
-    echo ERROR: Cannot reach github.com ^(network blocked or no internet^).
-    echo        Check WiFi/ethernet, proxy, atau corporate firewall yang block github.com.
-    echo        HTTP code received: %NET_CODE%
+    echo   ERROR: github.com tidak bisa diakses ^(HTTP %NET_CODE%^).
+    echo          Cek koneksi WiFi, proxy, atau corporate firewall.
     goto fail
 )
+echo   - internet: OK
 
-REM Check Visual C++ Redist 2015-2022 (x64) installed (registry check)
-set "VC_OK=0"
-reg query "HKLM\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\X64" /v Installed >nul 2>&1
-if not errorlevel 1 set "VC_OK=1"
-if "%VC_OK%"=="0" reg query "HKLM\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\X64" /v Installed >nul 2>&1 && set "VC_OK=1"
-
-if "%VC_OK%"=="0" (
-    echo.
-    echo ============================================================
-    echo   Visual C++ Redistributable 2015-2022 ^(x64^) BELUM TERPASANG.
-    echo   Tanpa ini, PyTorch CRASH ^(error c10.dll^).
-    echo ============================================================
-    echo.
-    echo Mendownload installer ^(~14 MB^)...
-    curl -L --retry 3 -o "%TOOLS%\vc_redist.x64.exe" "https://aka.ms/vs/17/release/vc_redist.x64.exe" >> "%LOG%" 2>&1
-    if errorlevel 1 ( echo ERROR: VC++ Redist download failed & goto fail )
-
-    echo.
-    echo Akan muncul UAC prompt - WAJIB klik YES.
-    echo Kalo gak diklik YES, agent gak akan jalan.
-    timeout /t 3 >nul
-
-    REM Trigger UAC via PowerShell + WAIT for completion
-    powershell -NoProfile -Command "Start-Process -FilePath '%TOOLS%\vc_redist.x64.exe' -ArgumentList '/install','/quiet','/norestart' -Verb RunAs -Wait" >> "%LOG%" 2>&1
-    del "%TOOLS%\vc_redist.x64.exe" 2>nul
-
-    REM Re-check after install
-    set "VC_OK=0"
-    reg query "HKLM\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\X64" /v Installed >nul 2>&1
-    if not errorlevel 1 set "VC_OK=1"
-    if "!VC_OK!"=="0" reg query "HKLM\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\X64" /v Installed >nul 2>&1 && set "VC_OK=1"
-
-    if "!VC_OK!"=="0" (
-        echo.
-        echo ============================================================
-        echo   ERROR: Visual C++ Redistributable GAGAL DI-INSTALL
-        echo ============================================================
-        echo.
-        echo Kemungkinan UAC prompt di-cancel atau policy block elevation.
-        echo.
-        echo MANUAL FIX:
-        echo   1. Download: https://aka.ms/vs/17/release/vc_redist.x64.exe
-        echo   2. Double-click, klik YES pas UAC, install
-        echo   3. Setelah selesai, re-run MantraAgent.bat
-        echo.
-        goto fail
-    )
-    echo   VC++ Redist install OK.
+REM Architecture check (x64 only)
+if /i not "%PROCESSOR_ARCHITECTURE%"=="AMD64" if /i not "%PROCESSOR_ARCHITEW6432%"=="AMD64" (
+    echo   ERROR: PC bukan x64. Mantra Agent cuma support Windows x64.
+    echo          Arsitektur terdeteksi: %PROCESSOR_ARCHITECTURE%
+    goto fail
 )
+echo   - arsitektur: x64 OK
 
-echo   System requirements OK.
+REM Windows version check (informational only)
+for /f "tokens=4-5 delims=. " %%I in ('ver') do set "WIN_VER=%%I.%%J"
+echo   - Windows version: %WIN_VER%
 echo.
 
-REM --- 1. uv (15 MB single binary - handles Python + venv + pip) -------------
+REM ============================================================================
+REM  STEP 2/9 - Visual C++ Redistributable 2015-2022 (x64)
+REM  Strategy: ALWAYS attempt system install via UAC. Bundled DLLs are
+REM  copied later as fallback (works even if UAC denied).
+REM ============================================================================
+echo [2/9] Visual C++ Redistributable 2015-2022 ^(x64^)...
+
+set "VC_INSTALLED=0"
+reg query "HKLM\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\X64" /v Installed >nul 2>&1
+if not errorlevel 1 set "VC_INSTALLED=1"
+
+if "%VC_INSTALLED%"=="1" (
+    echo   - sudah terpasang di system, skip install
+) else (
+    echo   - belum terpasang, akan download + install
+    set "VCR_EXE=%TOOLS%\vc_redist.x64.exe"
+
+    echo   - downloading vc_redist.x64.exe ^(~14 MB^)...
+    curl -L --retry 3 -s -o "!VCR_EXE!" "https://aka.ms/vs/17/release/vc_redist.x64.exe" >> "%LOG%" 2>&1
+
+    if not exist "!VCR_EXE!" (
+        echo   - WARNING: download gagal. Akan pakai bundled DLL fallback.
+    ) else (
+        echo.
+        echo   ============================================================
+        echo     PERHATIAN: AKAN MUNCUL UAC PROMPT
+        echo   ============================================================
+        echo     Klik YES untuk install Visual C++ Redistributable.
+        echo     Kalau klik NO, agent tetap bisa jalan via bundled DLL,
+        echo     jadi gak masalah kalau ditolak.
+        echo   ============================================================
+        echo.
+        timeout /t 4 >nul
+
+        REM Run elevated, wait for completion. /quiet /norestart prevents reboot.
+        powershell -NoProfile -Command "try { Start-Process -FilePath '!VCR_EXE!' -ArgumentList '/install','/quiet','/norestart' -Verb RunAs -Wait -ErrorAction Stop; exit 0 } catch { exit 1 }" >> "%LOG%" 2>&1
+
+        del "!VCR_EXE!" 2>nul
+
+        REM Re-check registry
+        reg query "HKLM\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\X64" /v Installed >nul 2>&1
+        if not errorlevel 1 (
+            echo   - VC++ Redist install: OK
+        ) else (
+            echo   - VC++ Redist install: SKIPPED ^(UAC ditolak / blocked^)
+            echo   - Akan pakai bundled DLL fallback ^(juga aman^)
+        )
+    )
+)
+echo.
+
+REM ============================================================================
+REM  STEP 3/9 - uv (Astral Python toolchain)
+REM ============================================================================
+echo [3/9] uv toolchain...
 if not exist "%TOOLS%\uv.exe" (
-    echo [1/5] Downloading uv 15 MB...
+    echo   - downloading uv ^(~15 MB^)...
     curl -L --retry 3 -o "%TOOLS%\uv.zip" "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip" >> "%LOG%" 2>&1
-    if errorlevel 1 ( echo ERROR: uv download failed & goto fail )
+    if errorlevel 1 ( echo   ERROR: uv download failed & goto fail )
     powershell -NoProfile -Command "Expand-Archive -LiteralPath '%TOOLS%\uv.zip' -DestinationPath '%TOOLS%' -Force" >> "%LOG%" 2>&1
-    del "%TOOLS%\uv.zip"
-    if not exist "%TOOLS%\uv.exe" ( echo ERROR: uv.exe missing after extract & goto fail )
+    del "%TOOLS%\uv.zip" 2>nul
+    if not exist "%TOOLS%\uv.exe" ( echo   ERROR: uv.exe missing after extract & goto fail )
+    echo   - installed
+) else (
+    echo   - already present
 )
+echo.
 
-REM --- 2. Python 3.12 venv (uv auto-downloads Python if needed) -------------
+REM ============================================================================
+REM  STEP 4/9 - Python 3.12 venv (uv auto-downloads CPython if missing)
+REM ============================================================================
+echo [4/9] Python 3.12 venv...
 if not exist "%VENV%\Scripts\python.exe" (
-    echo [2/5] Setting up Python 3.12 venv...
+    echo   - creating venv ^(uv auto-downloads Python 3.12^)...
     "%TOOLS%\uv.exe" venv --python 3.12 "%VENV%" >> "%LOG%" 2>&1
-    if errorlevel 1 ( echo ERROR: uv venv failed & goto fail )
+    if errorlevel 1 ( echo   ERROR: venv creation failed - check %LOG% & goto fail )
+    echo   - created
+) else (
+    echo   - already exists
 )
+echo.
 
-REM --- 3. Source code (download from GitHub once, on first install) ---
+REM ============================================================================
+REM  STEP 5/9 - Source code dari GitHub
+REM ============================================================================
+echo [5/9] Source code dari GitHub...
 if not exist "%SRC%\main.py" (
-    echo [3/5] Downloading source from GitHub...
+    echo   - downloading source.zip...
     curl -L --retry 3 -o "%TOOLS%\src.zip" "%GITHUB_SRC_ZIP%" >> "%LOG%" 2>&1
-    if errorlevel 1 ( echo ERROR: source download failed - check internet & goto fail )
+    if errorlevel 1 ( echo   ERROR: source download failed - check internet & goto fail )
+
     if exist "%TOOLS%\src_extract" rmdir /s /q "%TOOLS%\src_extract"
     powershell -NoProfile -Command "Expand-Archive -LiteralPath '%TOOLS%\src.zip' -DestinationPath '%TOOLS%\src_extract' -Force" >> "%LOG%" 2>&1
-    if errorlevel 1 ( echo ERROR: source extract failed & goto fail )
+    if errorlevel 1 ( echo   ERROR: source extract failed & goto fail )
+
     REM Move extracted folder (mantra-agent-main\*) into SRC
     for /f "delims=" %%D in ('dir /b /ad "%TOOLS%\src_extract"') do (
         move "%TOOLS%\src_extract\%%D" "%SRC%" >nul 2>&1
     )
     rmdir /s /q "%TOOLS%\src_extract" 2>nul
     del "%TOOLS%\src.zip" 2>nul
-)
 
-REM --- 4. pip install deps (also re-runs if requirements.txt changed) -----
+    if not exist "%SRC%\main.py" ( echo   ERROR: main.py missing after extract & goto fail )
+    echo   - downloaded ^& extracted
+) else (
+    echo   - already present
+)
+echo.
+
+REM ============================================================================
+REM  STEP 5b/9 - Bundled VC++ DLL fallback
+REM  Copy DLLs next to python.exe. PE loader's DLL search order looks at
+REM  the .exe's directory FIRST, so these win even if system VC++ broken.
+REM  Always re-copy (cheap) to ensure they're fresh.
+REM ============================================================================
+echo [5b/9] Bundled VC++ DLL fallback...
+if exist "%SRC%\runtime\vc\vcruntime140.dll" (
+    copy /y "%SRC%\runtime\vc\*.dll" "%VENV%\Scripts\" >nul 2>&1
+    echo   - copied to venv\Scripts ^(triple safety^)
+) else (
+    echo   - WARNING: bundled DLLs tidak ada di source — relying on system VC++
+)
+echo.
+
+REM ============================================================================
+REM  STEP 6/9 - Python deps via pip (PyTorch CPU + FastAPI + GFPGAN + rembg)
+REM  Re-runs only if requirements.txt hash changed or fastapi missing.
+REM ============================================================================
+echo [6/9] Python deps...
 set "REQ_HASH_FILE=%VENV%\.req_hash"
 set "REQ_HASH_NEW="
 for /f "delims=" %%H in ('certutil -hashfile "%SRC%\requirements.txt" SHA256 ^| findstr /v ":"') do if not defined REQ_HASH_NEW set "REQ_HASH_NEW=%%H"
@@ -143,45 +247,83 @@ if exist "%REQ_HASH_FILE%" set /p REQ_HASH_OLD=<"%REQ_HASH_FILE%"
 
 set "NEEDS_PIP=0"
 if not exist "%VENV%\Lib\site-packages\fastapi" set "NEEDS_PIP=1"
+if not exist "%VENV%\Lib\site-packages\torch" set "NEEDS_PIP=1"
 if not "%REQ_HASH_NEW%"=="%REQ_HASH_OLD%" set "NEEDS_PIP=1"
 
 if "%NEEDS_PIP%"=="1" (
-    echo [4/5] Installing/updating Python deps ^(slow on first run, ~5-10 min^)...
+    echo   - installing/updating ^(~1 GB, lambat di first run, 5-10 min^)...
     "%TOOLS%\uv.exe" pip install --python "%VENV%\Scripts\python.exe" --index-strategy unsafe-best-match --index-url https://pypi.org/simple --extra-index-url https://download.pytorch.org/whl/cpu -r "%SRC%\requirements.txt" >> "%LOG%" 2>&1
-    if errorlevel 1 ( echo ERROR: pip install failed - check %LOG% & goto fail )
+    if errorlevel 1 ( echo   ERROR: pip install failed - check %LOG% & goto fail )
     echo !REQ_HASH_NEW!>"%REQ_HASH_FILE%"
+    echo   - done
 ) else (
-    echo [4/5] Deps up-to-date
+    echo   - up-to-date
 )
+echo.
 
-REM --- 5a. ffmpeg ----------------------------------------------------------
+REM ============================================================================
+REM  STEP 6b/9 - Smoke test: import torch
+REM  Fail-fast kalau VC++ runtime broken (c10.dll WinError 1114).
+REM  Both system VC++ install AND bundled DLLs already attempted by now.
+REM ============================================================================
+echo [6b/9] Smoke test ^(import torch^)...
+"%VENV%\Scripts\python.exe" -c "import torch; print('torch', torch.__version__, 'OK')" >> "%LOG%" 2>&1
+if errorlevel 1 (
+    echo.
+    echo   ============================================================
+    echo     ERROR: import torch GAGAL
+    echo   ============================================================
+    echo     Kemungkinan VC++ runtime broken / DLL load failed.
+    echo     Detail di log: %LOG%
+    echo.
+    echo     MANUAL FIX:
+    echo       1. Download dari https://aka.ms/vs/17/release/vc_redist.x64.exe
+    echo       2. Double-click, klik YES pas UAC, install
+    echo       3. Re-run MantraAgent.bat
+    echo   ============================================================
+    goto fail
+)
+echo   - torch import OK
+echo.
+
+REM ============================================================================
+REM  STEP 7/9 - ffmpeg + yt-dlp + Node.js
+REM ============================================================================
+echo [7/9] Media tools...
+
+REM 7a. ffmpeg + ffprobe
 if not exist "%BIN%\ffmpeg.exe" (
-    echo [5/5a] Downloading ffmpeg 32 MB...
+    echo   - downloading ffmpeg ^(~32 MB^)...
     curl -L --retry 3 -o "%TOOLS%\ffmpeg.zip" "https://github.com/GyanD/codexffmpeg/releases/download/8.1/ffmpeg-8.1-essentials_build.zip" >> "%LOG%" 2>&1
-    if errorlevel 1 ( echo ERROR: ffmpeg download failed & goto fail )
+    if errorlevel 1 ( echo   ERROR: ffmpeg download failed & goto fail )
     powershell -NoProfile -Command "Expand-Archive -LiteralPath '%TOOLS%\ffmpeg.zip' -DestinationPath '%TOOLS%\ffmpeg_extract' -Force" >> "%LOG%" 2>&1
     for /f "delims=" %%D in ('dir /b /ad "%TOOLS%\ffmpeg_extract"') do (
         copy /y "%TOOLS%\ffmpeg_extract\%%D\bin\ffmpeg.exe" "%BIN%\" >nul
         copy /y "%TOOLS%\ffmpeg_extract\%%D\bin\ffprobe.exe" "%BIN%\" >nul
     )
-    rmdir /s /q "%TOOLS%\ffmpeg_extract"
-    del "%TOOLS%\ffmpeg.zip"
+    rmdir /s /q "%TOOLS%\ffmpeg_extract" 2>nul
+    del "%TOOLS%\ffmpeg.zip" 2>nul
+    if not exist "%BIN%\ffmpeg.exe" ( echo   ERROR: ffmpeg.exe missing after extract & goto fail )
+    echo   - ffmpeg installed
+) else (
+    echo   - ffmpeg already present
 )
 
-REM --- 5b. yt-dlp standalone exe -------------------------------------------
+REM 7b. yt-dlp standalone
 if not exist "%BIN%\yt-dlp.exe" (
-    echo [5/5b] Downloading yt-dlp 17 MB...
+    echo   - downloading yt-dlp ^(~17 MB^)...
     curl -L --retry 3 -o "%BIN%\yt-dlp.exe" "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" >> "%LOG%" 2>&1
-    if errorlevel 1 ( echo ERROR: yt-dlp download failed & goto fail )
+    if errorlevel 1 ( echo   ERROR: yt-dlp download failed & goto fail )
+    echo   - yt-dlp installed
+) else (
+    echo   - yt-dlp already present
 )
 
-REM --- 5c. Node.js portable (kepake buat bgutil-ytdlp-pot-provider /
-REM        bypass YouTube bot detection; full-album fail tanpa ini) ----------
-set "NODE_DIR=%ROOT%\node"
+REM 7c. Node.js portable (untuk bgutil-ytdlp-pot-provider YouTube bot bypass)
 if not exist "%NODE_DIR%\node.exe" (
-    echo [5/5c] Downloading Node.js 22 LTS portable ^(~30 MB^)...
+    echo   - downloading Node.js 22 LTS portable ^(~30 MB^)...
     curl -L --retry 3 -o "%TOOLS%\node.zip" "https://nodejs.org/dist/v22.11.0/node-v22.11.0-win-x64.zip" >> "%LOG%" 2>&1
-    if errorlevel 1 ( echo ERROR: Node.js download failed & goto fail )
+    if errorlevel 1 ( echo   ERROR: Node.js download failed & goto fail )
     if exist "%TOOLS%\node_extract" rmdir /s /q "%TOOLS%\node_extract"
     powershell -NoProfile -Command "Expand-Archive -LiteralPath '%TOOLS%\node.zip' -DestinationPath '%TOOLS%\node_extract' -Force" >> "%LOG%" 2>&1
     if exist "%NODE_DIR%" rmdir /s /q "%NODE_DIR%"
@@ -190,51 +332,82 @@ if not exist "%NODE_DIR%\node.exe" (
     )
     rmdir /s /q "%TOOLS%\node_extract" 2>nul
     del "%TOOLS%\node.zip" 2>nul
+    if not exist "%NODE_DIR%\node.exe" ( echo   ERROR: node.exe missing after extract & goto fail )
+    echo   - Node.js installed
+) else (
+    echo   - Node.js already present
 )
+echo.
 
-REM --- 6. Self-install bat + write VBS launcher + register autostart -------
-REM Autostart runs the VBS launcher (silent, no console) which calls the bat
-REM with hidden window. First-run keeps console visible (user sees install
-REM progress), subsequent boots = silent like Spotify / Discord.
+REM ============================================================================
+REM  STEP 8/9 - Self-install bat + VBS launcher + autostart registry
+REM ============================================================================
+echo [8/9] Setup autostart...
+
 set "INSTALLED_BAT=%ROOT%\MantraAgent.bat"
 set "VBS_LAUNCHER=%ROOT%\MantraAgent.vbs"
+
+REM Self-copy bat to %ROOT% so autostart can find it (kalau user run dari
+REM Downloads folder, file di sana bisa dipindah/hapus user kapan saja).
 if /i not "%~f0"=="%INSTALLED_BAT%" (
     copy /y "%~f0" "%INSTALLED_BAT%" >nul 2>&1
+    echo   - bat di-copy ke stable location
 )
-REM Write VBS launcher (one-liner that runs bat hidden, no wait)
-> "%VBS_LAUNCHER%" echo CreateObject("Wscript.Shell").Run """%INSTALLED_BAT%""", 0, False
-reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v MantraAgent /t REG_SZ /d "wscript.exe \"%VBS_LAUNCHER%\"" /f >> "%LOG%" 2>&1
-echo [autostart] registered silent launcher ^(VBS hidden window^)
 
-REM --- 7. Spawn tray (skip if already running to avoid double-spawn race) -
-REM Race scenario: user double-clicks bat, lalu Windows autostart fire bat
-REM kedua kalinya = 2 tray + 2 agent = port conflict. Cek dulu.
+REM Write VBS launcher (silent autostart, no console flash on boot)
+> "%VBS_LAUNCHER%" echo CreateObject("Wscript.Shell").Run """%INSTALLED_BAT%""", 0, False
+
+REM Register HKCU\Run autostart (no admin needed)
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v MantraAgent /t REG_SZ /d "wscript.exe \"%VBS_LAUNCHER%\"" /f >> "%LOG%" 2>&1
+echo   - autostart registered ^(silent VBS launcher^)
+echo.
+
+REM ============================================================================
+REM  STEP 9/9 - Spawn agent tray (skip if already running)
+REM ============================================================================
+echo [9/9] Starting agent tray...
+
+REM Skip-if-running guard (race protection: user double-click + autostart fire)
 powershell -NoProfile -Command "if (Get-Process pythonw -EA SilentlyContinue | Where-Object { try { $_.MainModule.FileName -like '*MantraAgent*src*' } catch { $false } }) { exit 0 } else { exit 1 }"
 if not errorlevel 1 (
-    echo [run] Mantra Agent tray sudah jalan - skip spawn
+    echo   - tray sudah jalan, skip spawn
     goto :end
 )
 
-echo [run] Starting Mantra Agent tray ...
+REM Spawn tray detached. Pass tool paths via env so handlers find them.
 set "MANTRA_AGENT_FFMPEG=%BIN%\ffmpeg.exe"
 set "MANTRA_AGENT_YTDLP=%BIN%\yt-dlp.exe"
-REM Prepend our portable Node to PATH so bgutil-ytdlp-pot-provider finds it
 set "PATH=%NODE_DIR%;%PATH%"
 set "PYTHONPATH=%SRC%"
 start "" /B "%VENV%\Scripts\pythonw.exe" "%SRC%\tray.py"
+echo   - spawned
 
 :end
-
 echo.
-echo OK - Mantra Agent jalan di background. Buka https://mantra.majutrah.co.id
-echo Logs: %LOG%
-echo Tray icon di system tray (kanan bawah).
-timeout /t 5 >nul
+echo ============================================================
+echo   INSTALL SELESAI
+echo ============================================================
+echo   Agent jalan di background ^(tray icon kanan bawah^).
+echo   Buka https://mantra.majutrah.co.id untuk pakai.
+echo   Logs: %LOG%
+echo ============================================================
+echo.
+
+REM Pause hanya kalau bukan autostart (jangan block silent boot run)
+if "%IS_AUTOSTART%"=="0" (
+    echo Window akan tertutup otomatis dalam 10 detik...
+    timeout /t 10 >nul
+)
 exit /b 0
 
 :fail
 echo.
-echo === FAIL - check %LOG% for details ===
+echo ============================================================
+echo   INSTALL GAGAL
+echo ============================================================
+echo   Lihat log lengkap: %LOG%
+echo   Kontak admin dengan log file di atas.
+echo ============================================================
 echo.
-pause
+if "%IS_AUTOSTART%"=="0" pause
 exit /b 1
