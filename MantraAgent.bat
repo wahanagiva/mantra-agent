@@ -220,21 +220,6 @@ if not exist "%SRC%\main.py" (
 echo.
 
 REM ============================================================================
-REM  STEP 5b/9 - Bundled VC++ DLL fallback
-REM  Copy DLLs next to python.exe. PE loader's DLL search order looks at
-REM  the .exe's directory FIRST, so these win even if system VC++ broken.
-REM  Always re-copy (cheap) to ensure they're fresh.
-REM ============================================================================
-echo [5b/9] Bundled VC++ DLL fallback...
-if exist "%SRC%\runtime\vc\vcruntime140.dll" (
-    copy /y "%SRC%\runtime\vc\*.dll" "%VENV%\Scripts\" >nul 2>&1
-    echo   - copied to venv\Scripts ^(triple safety^)
-) else (
-    echo   - WARNING: bundled DLLs tidak ada di source — relying on system VC++
-)
-echo.
-
-REM ============================================================================
 REM  STEP 6/9 - Python deps via pip (PyTorch CPU + FastAPI + GFPGAN + rembg)
 REM  Re-runs only if requirements.txt hash changed or fastapi missing.
 REM ============================================================================
@@ -262,11 +247,47 @@ if "%NEEDS_PIP%"=="1" (
 echo.
 
 REM ============================================================================
-REM  STEP 6b/9 - Smoke test: import torch
+REM  STEP 6b/9 - Bundled VC++ DLL fallback (CRITICAL: must run AFTER pip install)
+REM
+REM  Python 3.8+ DLL loading rules: extension modules' dependencies are searched
+REM  in (a) the .pyd/.dll's own directory, (b) System32, (c) os.add_dll_directory.
+REM  NOT in venv\Scripts\ where python.exe lives.
+REM
+REM  PyTorch's c10.dll lives in venv\Lib\site-packages\torch\lib\. PyTorch calls
+REM  os.add_dll_directory(torch_lib_path) before loading c10.dll, so c10's
+REM  dependencies (vcruntime140.dll, msvcp140.dll, etc.) are searched in:
+REM    1. torch\lib\          ← OUR copy lands here = guaranteed to be found
+REM    2. System32             ← only if VC++ Redist installed system-wide
+REM
+REM  We copy to BOTH torch\lib\ (primary, for c10/torch_cpu) AND venv\Scripts\
+REM  (secondary, for python.exe itself + ctypes loads from script dir).
+REM ============================================================================
+echo [6b/9] Bundled VC++ DLL fallback...
+if not exist "%SRC%\runtime\vc\vcruntime140.dll" (
+    echo   - WARNING: bundled DLLs tidak ada di source - relying on system VC++
+    goto vcdll_skip
+)
+
+set "TORCH_LIB=%VENV%\Lib\site-packages\torch\lib"
+if exist "%TORCH_LIB%" (
+    copy /y "%SRC%\runtime\vc\*.dll" "%TORCH_LIB%\" >nul 2>&1
+    echo   - copied to torch\lib\ ^(primary - next to c10.dll^)
+) else (
+    echo   - WARNING: torch\lib not found, skip primary copy
+)
+
+copy /y "%SRC%\runtime\vc\*.dll" "%VENV%\Scripts\" >nul 2>&1
+echo   - copied to venv\Scripts ^(secondary fallback^)
+
+:vcdll_skip
+echo.
+
+REM ============================================================================
+REM  STEP 6c/9 - Smoke test: import torch
 REM  Fail-fast kalau VC++ runtime broken (c10.dll WinError 1114).
 REM  Both system VC++ install AND bundled DLLs already attempted by now.
 REM ============================================================================
-echo [6b/9] Smoke test ^(import torch^)...
+echo [6c/9] Smoke test ^(import torch^)...
 "%VENV%\Scripts\python.exe" -c "import torch; print('torch', torch.__version__, 'OK')" >> "%LOG%" 2>&1
 if errorlevel 1 (
     echo.
