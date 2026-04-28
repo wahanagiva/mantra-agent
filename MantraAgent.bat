@@ -49,19 +49,53 @@ if not "%NET_CODE%"=="200" if not "%NET_CODE%"=="301" if not "%NET_CODE%"=="302"
 )
 
 REM Check Visual C++ Redist 2015-2022 (x64) installed (registry check)
+set "VC_OK=0"
 reg query "HKLM\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\X64" /v Installed >nul 2>&1
-if errorlevel 1 (
-    reg query "HKLM\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\X64" /v Installed >nul 2>&1
-    if errorlevel 1 (
-        echo   Visual C++ Redistributable 2015-2022 ^(x64^) BELUM TERPASANG.
-        echo   Mendownload + install ^(perlu UAC prompt, klik YES kalo muncul^)...
-        curl -L --retry 3 -o "%TOOLS%\vc_redist.x64.exe" "https://aka.ms/vs/17/release/vc_redist.x64.exe" >> "%LOG%" 2>&1
-        if errorlevel 1 ( echo ERROR: VC++ Redist download failed & goto fail )
-        REM /install /quiet /norestart needs admin - will trigger UAC
-        "%TOOLS%\vc_redist.x64.exe" /install /quiet /norestart >> "%LOG%" 2>&1
-        del "%TOOLS%\vc_redist.x64.exe" 2>nul
-        echo   VC++ Redist install attempt selesai.
+if not errorlevel 1 set "VC_OK=1"
+if "%VC_OK%"=="0" reg query "HKLM\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\X64" /v Installed >nul 2>&1 && set "VC_OK=1"
+
+if "%VC_OK%"=="0" (
+    echo.
+    echo ============================================================
+    echo   Visual C++ Redistributable 2015-2022 ^(x64^) BELUM TERPASANG.
+    echo   Tanpa ini, PyTorch CRASH ^(error c10.dll^).
+    echo ============================================================
+    echo.
+    echo Mendownload installer ^(~14 MB^)...
+    curl -L --retry 3 -o "%TOOLS%\vc_redist.x64.exe" "https://aka.ms/vs/17/release/vc_redist.x64.exe" >> "%LOG%" 2>&1
+    if errorlevel 1 ( echo ERROR: VC++ Redist download failed & goto fail )
+
+    echo.
+    echo Akan muncul UAC prompt - WAJIB klik YES.
+    echo Kalo gak diklik YES, agent gak akan jalan.
+    timeout /t 3 >nul
+
+    REM Trigger UAC via PowerShell + WAIT for completion
+    powershell -NoProfile -Command "Start-Process -FilePath '%TOOLS%\vc_redist.x64.exe' -ArgumentList '/install','/quiet','/norestart' -Verb RunAs -Wait" >> "%LOG%" 2>&1
+    del "%TOOLS%\vc_redist.x64.exe" 2>nul
+
+    REM Re-check after install
+    set "VC_OK=0"
+    reg query "HKLM\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\X64" /v Installed >nul 2>&1
+    if not errorlevel 1 set "VC_OK=1"
+    if "!VC_OK!"=="0" reg query "HKLM\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\X64" /v Installed >nul 2>&1 && set "VC_OK=1"
+
+    if "!VC_OK!"=="0" (
+        echo.
+        echo ============================================================
+        echo   ERROR: Visual C++ Redistributable GAGAL DI-INSTALL
+        echo ============================================================
+        echo.
+        echo Kemungkinan UAC prompt di-cancel atau policy block elevation.
+        echo.
+        echo MANUAL FIX:
+        echo   1. Download: https://aka.ms/vs/17/release/vc_redist.x64.exe
+        echo   2. Double-click, klik YES pas UAC, install
+        echo   3. Setelah selesai, re-run MantraAgent.bat
+        echo.
+        goto fail
     )
+    echo   VC++ Redist install OK.
 )
 
 echo   System requirements OK.
